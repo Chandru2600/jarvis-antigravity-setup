@@ -49,14 +49,10 @@ function flag(name: string, raw: unknown, fallback: boolean): boolean {
 /**
  * Which brain to use.
  *
- *   'bridge' — run `npm run bridge` alongside the app. Authenticates off your
- *              existing Claude Code login (no API key), and every MCP server in
- *              your Claude Code config is available to JARVIS, including local
- *              ones like higgsfield, elevenlabs, android and playwright.
+ *   'bridge' — run `npm run bridge` alongside the app. Connects to Google
+ *              Gemini API over WebSocket, driving UI themes, blades, and camera tools.
  *
- *   'direct' — the browser calls the Claude API itself. Nothing to run and it
- *              deploys as a static site, but it needs VITE_ANTHROPIC_API_KEY in
- *              the bundle and only reaches remote HTTP MCP servers.
+ *   'direct' — browser direct mode.
  */
 export const BACKEND: 'bridge' | 'direct' = choice(
   'VITE_BACKEND',
@@ -95,17 +91,10 @@ export const USE_ELEVENLABS = flag(
  * Speech engine.
  *
  *   'system' — the browser's own speechSynthesis. Starts on the next frame,
- *     costs nothing, but is capped by whatever voices the OS ships; on macOS
- *     the British male option is compact Daniel.
+ *     costs nothing, but is capped by whatever voices the OS ships.
  *
  *   'kokoro' — an 82M-parameter neural TTS running entirely in the browser via
- *     ONNX. Four proper British male voices and far better sound, nothing
- *     leaving the machine. MEASURED ON THIS MACHINE at q8/WebGPU it generates
- *     about 2.2x slower than realtime — "Yes, sir?" took 3.3 seconds and a
- *     thirteen-word sentence took nine. That is not a conversation, so it is
- *     not the default. Try `fp32` (see kokoro.ts) before enabling it; int8
- *     quantisation often silently falls back to CPU on WebGPU, which is the
- *     likely cause.
+ *     ONNX. Four proper British male voices and far better sound.
  */
 export const TTS_ENGINE: 'kokoro' | 'system' = choice(
   'VITE_TTS_ENGINE',
@@ -129,28 +118,25 @@ export const KOKORO_VOICE = choice(
 )
 
 export const env = {
-  anthropicKey: str(import.meta.env.VITE_ANTHROPIC_API_KEY) ?? '',
+  geminiKey:
+    str(import.meta.env.VITE_GEMINI_API_KEY) ??
+    str(import.meta.env.GEMINI_API_KEY) ??
+    '',
   elevenKey: str(import.meta.env.VITE_ELEVENLABS_API_KEY) ?? '',
   elevenVoiceId:
     str(import.meta.env.VITE_ELEVENLABS_VOICE_ID) ?? 'JBFqnCBsd6RMkjVDRZzb',
   porcupineKey: str(import.meta.env.VITE_PICOVOICE_ACCESS_KEY) ?? '',
 }
 
-/** `claude-opus-5` is the strongest model; `claude-sonnet-5` trades a little
- *  quality for lower latency if you find responses feel slow on camera. */
-export const MODEL = 'claude-opus-5'
+/** Default Gemini model */
+export const MODEL = 'gemini-3.1-flash-lite-preview'
 
-/**
- * Fast mode runs the same Opus 5 at up to 2.5x output speed. It is a research
- * preview on the Claude API and costs $10/$50 per Mtok instead of $5/$25.
- * For a recorded demo the snappiness is worth it; flip to false to save money.
- */
 export const FAST_MODE = true
 
 /**
  * Wake-word engine.
  *   'speech'    — zero setup, uses the browser's SpeechRecognition to listen for
- *                 "hey jarvis". Chrome/Edge only, audio goes to Google.
+ *                 "hey jarvis". Chrome/Edge only.
  *   'porcupine' — recommended. Runs offline in WASM, "Jarvis" is a built-in
  *                 keyword, far fewer false triggers. Needs a free AccessKey
  *                 from console.picovoice.ai.
@@ -168,7 +154,7 @@ export type McpServer = {
   name: string
   /** Human label for the HUD. */
   label: string
-  /** Remote MCP endpoint. Must be reachable from Anthropic's servers, not yours. */
+  /** Remote MCP endpoint. */
   url: string
   /** Bearer token, if the server wants one. Many put the secret in the URL instead. */
   token?: string
@@ -176,24 +162,7 @@ export type McpServer = {
 }
 
 /**
- * These are passed to the Messages API `mcp_servers` parameter. Anthropic dials
- * the servers itself, so there is no CORS to fight and no local bridge to run —
- * which is what makes a backend-free JARVIS possible.
- *
- * Only *remote HTTP* MCP servers work here. Local stdio servers (filesystem,
- * Blender, Playwright) need a machine to run on and are out of scope for a
- * browser-only build.
- *
- * READ THIS BEFORE FILLING ANY OF THESE IN. Every one of them ships to the
- * browser. In direct mode Vite inlines each token below into the JavaScript
- * bundle, and the Zapier and Pipedream URLs *are* secrets — the URL is the
- * credential. Anyone who opens devtools on a deployed build gets your Notion,
- * Linear, GitHub, Stripe, Sentry and Home Assistant access, not just the
- * Anthropic key. This is fine for a demo on your own machine or a recording;
- * it is not fine for anything public. The bridge backend (the default) reads
- * none of this — it uses your Claude Code MCP config, where the secrets stay on
- * your machine — so if you want these integrations without the exposure, run
- * `npm run bridge` instead of filling in this block.
+ * MCP servers config.
  */
 export const MCP_SERVERS: McpServer[] = [
   // The single highest-leverage integration: one URL, ~8,000 apps, managed
@@ -254,7 +223,7 @@ export const MCP_SERVERS: McpServer[] = [
   // Home Assistant is self-hosted, so this needs a publicly reachable URL
   // (Nabu Casa Cloud, or a Cloudflare tunnel). Worth the setup — "Jarvis, dim
   // the lights" with the room actually dimming is the best shot in the video.
-  // Both halves are required: an instance reachable from Anthropic's servers
+  // Both halves are required: an instance reachable externally
   // with no bearer token attached is one that answers 401 to every tool call,
   // which reads on the HUD as connected and behaves as broken.
   {

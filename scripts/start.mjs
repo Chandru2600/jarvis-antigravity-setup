@@ -30,17 +30,33 @@ import { cpSync, existsSync, mkdirSync } from 'node:fs'
  * repository — and is re-copied whenever it is missing, which costs nothing
  * after the first run.
  */
-function vendorWasm() {
+async function vendorWasm() {
   const from = 'node_modules/@mediapipe/tasks-vision/wasm'
   const to = 'public/mediapipe'
-  if (!existsSync(from)) return // gesture control is optional; carry on without it
-  if (existsSync(`${to}/vision_wasm_internal.wasm`)) return
-  try {
-    mkdirSync(to, { recursive: true })
-    cpSync(from, to, { recursive: true })
-    console.log('  vendored the hand-tracking runtime into public/mediapipe.')
-  } catch (err) {
-    console.warn(`  could not vendor the hand-tracking runtime: ${err.message}`)
+  if (existsSync(from) && !existsSync(`${to}/vision_wasm_internal.wasm`)) {
+    try {
+      mkdirSync(to, { recursive: true })
+      cpSync(from, to, { recursive: true })
+      console.log('  vendored the hand-tracking runtime into public/mediapipe.')
+    } catch (err) {
+      console.warn(`  could not vendor the hand-tracking runtime: ${err.message}`)
+    }
+  }
+  const taskFile = `${to}/hand_landmarker.task`
+  if (!existsSync(taskFile)) {
+    try {
+      mkdirSync(to, { recursive: true })
+      console.log('  fetching hand_landmarker.task model...')
+      const res = await fetch('https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task')
+      if (res.ok) {
+        const buf = Buffer.from(await res.arrayBuffer())
+        const { writeFileSync } = await import('node:fs')
+        writeFileSync(taskFile, buf)
+        console.log('  downloaded hand_landmarker.task into public/mediapipe.')
+      }
+    } catch (err) {
+      console.warn(`  could not auto-download hand_landmarker.task: ${err.message}`)
+    }
   }
 }
 
@@ -111,10 +127,11 @@ if (port) {
   console.log(`  serving the face on port ${port}; the bridge will accept it.\n`)
 }
 
-vendorWasm()
+await vendorWasm()
 
-console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
-run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
+console.log('\nJ.A.R.V.I.S. starting — the brain (Gemini) and the face.\n')
+const bridgeScript = existsSync('bridge/server_gemini.mjs') ? 'bridge/server_gemini.mjs' : 'bridge/server.mjs'
+run('bridge', 'node', [bridgeScript], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
 run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', {})

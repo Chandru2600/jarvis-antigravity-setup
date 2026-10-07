@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import React, { Component, useMemo } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import {
   EffectComposer,
@@ -13,6 +13,7 @@ import { Core } from './Core'
 import { Particles } from './Particles'
 import { Orbits } from './Orbits'
 import { useStore, phaseColor, accentFor, type Phase } from '../store'
+import { hands } from '../lib/hands'
 
 /** Rings spin harder while JARVIS is working — reads as effort. */
 const spinFor: Record<Phase, number> = {
@@ -169,10 +170,45 @@ function Rig() {
     const want = Math.max(level, breathe)
     drive.level += (want - drive.level) * Math.min(1, dt * 9)
 
-    // Slow drift on the camera keeps handheld-ish life in the shot.
-    const t = state.clock.elapsedTime
-    state.camera.position.x = Math.sin(t * 0.13) * 0.35
-    state.camera.position.y = Math.cos(t * 0.17) * 0.22
+    // Dynamic hand tracking: parallax camera and interactive holographic reactions
+    const primaryHand = hands[0]
+    if (primaryHand && primaryHand.points && primaryHand.points.length > 0) {
+      // Normalized screen coordinates (-1 to 1)
+      const nx = (primaryHand.x / Math.max(1, window.innerWidth) - 0.5) * 2
+      const ny = -(primaryHand.y / Math.max(1, window.innerHeight) - 0.5) * 2
+
+      const targetCamX = nx * 1.5
+      const targetCamY = ny * 1.0
+      state.camera.position.x += (targetCamX - state.camera.position.x) * Math.min(1, dt * 6)
+      state.camera.position.y += (targetCamY - state.camera.position.y) * Math.min(1, dt * 6)
+
+      // When pinching, accelerate the reactor rotation and energy
+      if (primaryHand.pinched) {
+        drive.reactor.spin = Math.max(drive.reactor.spin, 3.2)
+        drive.level = Math.max(drive.level, 0.45)
+      }
+
+      // If two hands present, pinch/zoom the camera distance based on hand span!
+      if (hands.length >= 2 && hands[1].points?.length) {
+        const dx = (hands[0].x - hands[1].x) / Math.max(1, window.innerWidth)
+        const dy = (hands[0].y - hands[1].y) / Math.max(1, window.innerHeight)
+        const handDist = Math.hypot(dx, dy)
+        // Normal separation ~0.3; spread hands to zoom in, close hands to zoom out
+        const targetZ = 8.2 - handDist * 4.5
+        const clampedZ = Math.max(3.8, Math.min(8.5, targetZ))
+        state.camera.position.z += (clampedZ - state.camera.position.z) * Math.min(1, dt * 4)
+      } else {
+        state.camera.position.z += (6.2 - state.camera.position.z) * Math.min(1, dt * 3)
+      }
+    } else {
+      // Slow drift on the camera keeps handheld-ish life in the shot when idle.
+      const t = state.clock.elapsedTime
+      const idleX = Math.sin(t * 0.13) * 0.35
+      const idleY = Math.cos(t * 0.17) * 0.22
+      state.camera.position.x += (idleX - state.camera.position.x) * Math.min(1, dt * 3)
+      state.camera.position.y += (idleY - state.camera.position.y) * Math.min(1, dt * 3)
+      state.camera.position.z += (6.2 - state.camera.position.z) * Math.min(1, dt * 3)
+    }
     state.camera.lookAt(0, 0, 0)
   })
 
@@ -192,49 +228,108 @@ function Rig() {
   )
 }
 
+class PostEffectsErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false }
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+  componentDidCatch(err: unknown) {
+    console.warn('[jarvis] Postprocessing effect failed, continuing with direct render:', err)
+  }
+  render() {
+    if (this.state.failed) return null
+    return this.props.children
+  }
+}
+
+class SceneErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { hasError: boolean; retry: number }
+> {
+  state = { hasError: false, retry: 0 }
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+  componentDidCatch(err: unknown) {
+    console.warn('[jarvis] WebGL Scene caught error:', err)
+    if (this.state.retry < 3) {
+      setTimeout(() => {
+        this.setState((s) => ({ hasError: false, retry: s.retry + 1 }))
+      }, 1200)
+    }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          onClick={() => this.setState((s) => ({ hasError: false, retry: s.retry + 1 }))}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            color: 'rgba(25, 196, 196, 0.7)',
+            fontSize: 12,
+            letterSpacing: '0.2em',
+            fontFamily: 'monospace',
+            zIndex: 10,
+          }}
+        >
+          <span>HOLOGRAPHIC CORE STANDBY</span>
+          <span style={{ fontSize: 9, opacity: 0.6, marginTop: 8 }}>
+            [CLICK OR OPEN NEW TAB TO RECONNECT]
+          </span>
+        </div>
+      )
+    }
+    return (
+      <React.Fragment key={this.state.retry}>{this.props.children}</React.Fragment>
+    )
+  }
+}
+
 export function Scene() {
   return (
-    <Canvas
-      className="scene"
-      camera={{ position: [0, 0, 6.2], fov: 45 }}
-      gl={{ antialias: true, alpha: true }}
-      dpr={[1, 2]}
-    >
-      <Rig />
-      {/*
-        multisampling={0} on purpose. The default is 8, which allocates a
-        half-float MSAA target — at dpr 2 that is a 3200x1800 buffer — and there
-        is not one polygon edge in this scene for it to smooth: everything is
-        additive blobs, point sprites and lines, all of which are already
-        soft-edged by their own falloff and then blurred again by bloom.
-
-        Tone mapping is also deliberate, if less obviously so. EffectComposer
-        forces gl.toneMapping to NoToneMapping while it is mounted (there is no
-        prop for it), so the additive output clips instead of rolling off. That
-        hard clip to white is the neon look this piece wants — the sweep and the
-        rim are meant to blow out. If you ever want the filmic roll-off back,
-        add a <ToneMapping mode={ToneMappingMode.ACES_FILMIC} /> effect at the
-        end of this chain rather than touching the renderer.
-      */}
-      <EffectComposer multisampling={0}>
-        {/* Bloom is what turns additive lines into "hologram". */}
-        <Bloom
-          intensity={1.15}
-          // A higher threshold keeps the mid-tones intact so the orb doesn't
-          // flatten into a solid white disc.
-          luminanceThreshold={0.22}
-          luminanceSmoothing={0.85}
-          mipmapBlur
-          radius={0.72}
-        />
-        <ChromaticAberration
-          offset={new THREE.Vector2(0.0009, 0.0012)}
-          radialModulation={false}
-          modulationOffset={0}
-        />
-        <Noise opacity={0.035} blendFunction={BlendFunction.OVERLAY} />
-        <Vignette eskil={false} offset={0.22} darkness={0.95} />
-      </EffectComposer>
-    </Canvas>
+    <SceneErrorBoundary>
+      <Canvas
+        className="scene"
+        camera={{ position: [0, 0, 6.2], fov: 45 }}
+        gl={{ antialias: true, alpha: true, powerPreference: 'default' }}
+        dpr={[1, 2]}
+        onCreated={({ gl }) => {
+          gl.domElement.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault()
+            console.warn('[jarvis] WebGL context lost; preventing default to allow auto-recovery')
+          })
+        }}
+      >
+        <Rig />
+        <PostEffectsErrorBoundary>
+          <EffectComposer multisampling={0}>
+            {/* Bloom is what turns additive lines into "hologram". */}
+            <Bloom
+              intensity={1.15}
+              luminanceThreshold={0.22}
+              luminanceSmoothing={0.85}
+              mipmapBlur
+              radius={0.72}
+            />
+            <ChromaticAberration
+              offset={new THREE.Vector2(0.0009, 0.0012)}
+              radialModulation={false}
+              modulationOffset={0}
+            />
+            <Noise opacity={0.035} blendFunction={BlendFunction.OVERLAY} />
+            <Vignette eskil={false} offset={0.22} darkness={0.95} />
+          </EffectComposer>
+        </PostEffectsErrorBoundary>
+      </Canvas>
+    </SceneErrorBoundary>
   )
 }

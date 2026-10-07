@@ -463,9 +463,9 @@ export default function App() {
     })
     const warming = warm().catch((err: Error) => s.setError(err.message))
 
-    if (!usingBridge && !env.anthropicKey) {
+    if (!usingBridge && !env.geminiKey) {
       s.setError(
-        'No Anthropic API key — copy .env.example to .env.local and set VITE_ANTHROPIC_API_KEY.',
+        'No Gemini API key — copy .env.example to .env.local and set GEMINI_API_KEY.',
       )
     }
 
@@ -614,7 +614,19 @@ export default function App() {
           store.getState().setError(null)
           void hands
             .enableHands()
-            .then(() => store.getState().setGestures(true))
+            .then(() => {
+              store.getState().setGestures(true)
+              if (store.getState().blades.length === 0) {
+                store.getState().pushBlade({
+                  id: 'gesture-demo',
+                  title: 'GESTURE INTERFACE',
+                  kind: 'markup',
+                  size: 'compact',
+                  hold: 'sticky',
+                  html: '<div class="hud-rows"><div class="hud-row"><span class="hud-label">Gesture Mode</span><span class="hud-metric">ACTIVE</span></div><div class="hud-note">Pinch (thumb + index) to grab and drag this card.<br/>Frame with both hands to resize.</div></div>',
+                })
+              }
+            })
             .catch((err: Error) => {
               store.getState().setGestures(false)
               store

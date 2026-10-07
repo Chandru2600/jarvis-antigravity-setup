@@ -1,4 +1,4 @@
-import type { AskHandlers } from './anthropic'
+import type { AskHandlers } from './direct'
 import type { Blade, Panel } from '../store'
 import { BRIDGE_WS_URL } from '../config'
 
@@ -6,14 +6,11 @@ import { BRIDGE_WS_URL } from '../config'
  * Client for the local bridge (see bridge/server.mjs).
  *
  * Same `ask()` shape as the browser-direct path, so App.tsx doesn't care which
- * brain is behind it. The difference is what's reachable: this one runs on your
- * machine, so every MCP server in your Claude Code config is in play.
+ * brain is behind it. This bridge connects to Google Gemini via WebSocket.
  *
- * The socket is the session. The bridge holds one Claude Agent SDK query per
- * connection and the whole conversation lives inside it, so a dropped socket
- * silently wipes JARVIS's memory of the exchange while the transcript on screen
- * still shows it. That is why the reconnect below is loud rather than
- * invisible: `watchConnection` exists so the HUD can say so.
+ * The socket is the session. The bridge manages turns and tool execution per
+ * connection and conversation context lives inside it. That is why the reconnect
+ * below is loud rather than invisible: `watchConnection` exists so the HUD can say so.
  */
 
 /** Anything the bridge sends. Deliberately loose — a frame from a future
@@ -169,9 +166,8 @@ function dispatch(ws: WebSocket) {
     }
 
     if (msg.type === 'ready') {
-      // The bridge announces immediately on connect from Claude Code's config,
-      // then again with live status once the agent initialises. Keep listening
-      // so the later, more accurate list wins.
+      // The bridge announces immediately on connect, then again with live status
+      // once initialised. Keep listening so the later, more accurate list wins.
       servers = (msg.servers ?? [])
         .map((s) => (typeof s === 'string' ? s : (s.name ?? '')))
         .filter(Boolean)

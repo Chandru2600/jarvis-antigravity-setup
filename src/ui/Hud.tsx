@@ -312,11 +312,32 @@ export function Hud() {
 
       <footer className="hud-bottom">
         <span className="hint">
-          say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>G</kbd> hands
+          say <b>“hey jarvis”</b> ·{' '}
+          <span
+            style={{ cursor: 'pointer', userSelect: 'none' }}
+            onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }))}
+            title="Click or hold Space to talk"
+          >
+            <kbd>Space</kbd> to talk
+          </span>{' '}
+          ·{' '}
+          <span
+            style={{ cursor: 'pointer', userSelect: 'none' }}
+            onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }))}
+            title="Click or press G to toggle hands gesture mode"
+          >
+            <kbd>G</kbd> {gestures ? 'hands [ON]' : 'hands [OFF]'}
+          </span>
           {voice && (
             <>
               {' · '}
-              <kbd>V</kbd> voice: {voice.replace(/\(.*?\)/g, '').trim()}
+              <span
+                style={{ cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }))}
+                title="Click or press V to cycle voice"
+              >
+                <kbd>V</kbd> voice: {voice.replace(/\(.*?\)/g, '').trim()}
+              </span>
             </>
           )}
         </span>

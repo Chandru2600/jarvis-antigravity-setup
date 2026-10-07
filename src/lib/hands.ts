@@ -37,16 +37,8 @@ import { holdCamera, releaseCamera } from './camera'
  * executable code, re-resolved every load, that we neither control nor can pin
  * against being changed underneath us.
  */
-const WASM_BASE = '/mediapipe'
-
-/**
- * The weights stay remote, and that is a different call from the runtime above.
- * This is data, not code: it is fetched, so `connect-src` governs it rather
- * than `script-src`, and nothing in it executes. The browser caches it after
- * first use, exactly as the neural voice model is handled.
- */
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+const WASM_BASE = typeof window !== 'undefined' ? `${window.location.origin}/mediapipe` : '/mediapipe'
+const MODEL_URL = typeof window !== 'undefined' ? `${window.location.origin}/mediapipe/hand_landmarker.task` : '/mediapipe/hand_landmarker.task'
 
 /* ------------------------------------------------------------------ anatomy */
 
@@ -118,8 +110,8 @@ const SKELETON_BETA = 0.02
  * Two thresholds, not one: it takes a tighter pinch to start a press than to
  * keep one, so the press cannot flicker on the boundary.
  */
-const PINCH_ON = 0.40
-const PINCH_OFF = 0.60
+const PINCH_ON = 0.48
+const PINCH_OFF = 0.65
 
 /** A finger counts as extended when its tip is this much further from the
  *  wrist than its middle joint. Ratio rather than a y-comparison, so it still
@@ -137,29 +129,14 @@ const GESTURE_HOLD_MS = 200
 
 /**
  * A pinch has to survive this long before it presses.
- *
- * Pinch used to be exempt from any hold at all, on the reasoning that a press
- * is the one gesture where latency is felt. True, but it made every transition
- * between poses a hazard: going from a framing L to a point, or from a fist to
- * an open hand, takes the fingers through arrangements that momentarily read as
- * a pinch. Each of those fired a press — grabbing a blade you were not touching
- * and dropping it somewhere you did not choose.
- *
- * Seventy milliseconds is four frames. It is comfortably below the threshold at
- * which a press feels delayed, and comfortably above the one or two frames a
- * hand spends passing through a shape on its way to another one.
+ * 35 milliseconds is roughly 2 frames at 60fps — fast and responsive.
  */
-const PINCH_CONFIRM_MS = 70
+const PINCH_CONFIRM_MS = 35
 
 /**
- * After the finger pose changes, presses are ignored for this long.
- *
- * The confirm window above catches a pinch that flickers. This catches the
- * other half of the problem: a pose that genuinely settles into something
- * pinch-shaped for a moment while the hand is still rearranging itself. Both
- * are needed, because they fail in opposite directions.
+ * After the finger pose changes, presses are settled quickly without locking out gestures.
  */
-const POSE_SETTLE_MS = 220
+const POSE_SETTLE_MS = 60
 
 /** Below this many pixels of travel, a press was a click rather than a drag. */
 const CLICK_SLOP = 20
@@ -441,8 +418,15 @@ function emit(h: Hand) {
      * why grabbing a title bar worked only when you happened to pinch straight
      * down onto it.
      */
-    const aim = { x: h.aimX, y: h.aimY }
-    const target = document.elementFromPoint(aim.x, aim.y) ?? over
+    const targetAtCursor = document.elementFromPoint(h.x, h.y)
+    const targetAtAim = document.elementFromPoint(h.aimX, h.aimY)
+    // If the cursor is over a blade or interactive control, prioritize it directly
+    const target = (targetAtCursor?.closest('.bl, button, .hud-bottom') ? targetAtCursor : null)
+      ?? (targetAtAim?.closest('.bl, button, .hud-bottom') ? targetAtAim : null)
+      ?? targetAtCursor
+      ?? targetAtAim
+      ?? over
+    const aim = target === targetAtCursor ? { x: h.x, y: h.y } : { x: h.aimX, y: h.aimY }
     p.captured = target
     p.downX = aim.x
     p.downY = aim.y
@@ -568,29 +552,37 @@ async function ensureModel() {
   if (landmarker) return landmarker
   diag.loading = true
   try {
+    console.log('[jarvis] Loading MediaPipe hand landmarker from:', WASM_BASE, MODEL_URL)
     const vision = await FilesetResolver.forVisionTasks(WASM_BASE)
-    landmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
-      runningMode: 'VIDEO',
-      numHands: 2,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    })
+    try {
+      landmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      })
+      console.log('[jarvis] HandLandmarker ready on CPU')
+    } catch (cpuErr) {
+      console.warn('[jarvis] CPU delegate failed for hands, retrying on GPU:', cpuErr)
+      diag.lastError = `CPU delegate failed (${(cpuErr as Error)?.message ?? cpuErr}); retrying on GPU`
+      landmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      })
+      console.log('[jarvis] HandLandmarker ready on GPU')
+    }
     diag.ready = true
     return landmarker
   } catch (err) {
-    // A machine with no working GPU delegate should still get hands rather than
-    // an error — the CPU path is slower but perfectly usable at this frame size.
-    diag.lastError = `GPU delegate failed (${(err as Error)?.message ?? err}); retrying on CPU`
-    const vision = await FilesetResolver.forVisionTasks(WASM_BASE)
-    landmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
-      runningMode: 'VIDEO',
-      numHands: 2,
-    })
-    diag.ready = true
-    return landmarker
+    console.error('[jarvis] HandLandmarker initialization error:', err)
+    diag.lastError = String((err as Error)?.message ?? err)
+    throw err
   } finally {
     diag.loading = false
   }
